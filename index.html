@@ -1750,133 +1750,136 @@
       document.getElementById('camera-viewport').appendChild(notice);
     }
 
-    // DIAGNOSTIC SCREEN & PROGRESSIVE RETRY FOR GITHUB PAGES
-    async function setupWebcamStream() {
-      if (isCameraStreaming) return;
-      const videoElement = document.getElementById('webcam-feed');
-      videoElement.style.display = 'block';
+    // --- HÀM CAMERA TỐI ƯU HÓA (ĐÃ SỬA LỖI CHROME/EDGE) ---
+async function setupWebcamStream() {
+  if (isCameraStreaming) return;
+  const videoElement = document.getElementById('webcam-feed');
+  videoElement.style.display = 'block';
+  
+  const warning = document.getElementById('camera-error-hint');
+  if (warning) warning.remove();
+  
+  videoElement.muted = true;
+  videoElement.setAttribute('playsinline', ''); 
+  videoElement.setAttribute('autoplay', '');
+  videoElement.setAttribute('muted', '');
+
+  // Cấu hình không ép buộc 'exact' để tránh lỗi NotFoundError
+  const constraints = {
+    video: {
+      facingMode: { ideal: activeCameraMode },
+      width: { ideal: 1280 },
+      height: { ideal: 720 }
+    },
+    audio: false
+  };
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    applyStream(stream, videoElement);
+  } catch (err) {
+    console.warn("Cấu hình HD thất bại, đang thử cấu hình mặc định...", err);
+    try {
+      const simpleStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      applyStream(simpleStream, videoElement);
+    } catch (finalErr) {
+      handleCameraFailure(finalErr);
+    }
+  }
+}
+
+async function applyStream(stream, videoElement) {
+  cameraStream = stream;
+  videoElement.srcObject = stream;
+  isCameraStreaming = true;
+  
+  try {
+    await videoElement.play();
+  } catch (playErr) {
+    console.warn("Tự phát bị chặn, sẽ kích hoạt lại khi người dùng click:", playErr);
+    const autoPlayHandler = () => {
+      videoElement.play();
+      document.removeEventListener('click', autoPlayHandler);
+    };
+    document.addEventListener('click', autoPlayHandler);
+  }
+  toggleMirrorView();
+}
+
+// --- CÁC HÀM CHỨC NĂNG KHÁC (GIỮ NGUYÊN) ---
+
+function handleCameraFailure(error) {
+  console.error("Camera hoàn toàn không thể truy cập:", error);
+  const videoElement = document.getElementById('webcam-feed');
+  videoElement.style.display = 'none';
+
+  const notice = document.getElementById('simulation-notice');
+  if (notice) notice.remove();
+
+  const viewport = document.getElementById('camera-viewport');
+  const existingWarning = document.getElementById('camera-error-hint');
+  if (existingWarning) existingWarning.remove();
+
+  const isUnsecure = window.location.protocol === 'http:' && window.location.hostname !== 'localhost';
+
+  const warningBox = document.createElement('div');
+  warningBox.id = "camera-error-hint";
+  warningBox.style.cssText = "color:white; text-align:center; padding:2rem; z-index:25; max-width:80%;";
+  warningBox.innerHTML = `
+    <h3 style="font-weight:700; margin-bottom: 0.5rem;">Cần Cấp Quyền Camera</h3>
+    <p>${isUnsecure ? "LỖI BẢO MẬT: Phải sử dụng HTTPS." : "Vui lòng kiểm tra quyền truy cập camera trong trình duyệt."}</p>
+    <button onclick="${isUnsecure ? "window.location.protocol='https:'" : "setupWebcamStream()"}">Thử lại</button>
+  `;
+  viewport.appendChild(warningBox);
+}
+
+function stopWebcamStream() {
+  isCameraStreaming = false;
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(track => track.stop());
+    cameraStream = null;
+  }
+  const warning = document.getElementById('camera-error-hint');
+  if (warning) warning.remove();
+  document.getElementById('webcam-feed').style.display = 'block';
+}
+
+function triggerBulkUpload() {
+  document.getElementById('bulk-upload-input').click();
+}
+
+function handleBulkUpload(event) {
+  const files = event.target.files;
+  if (!files || files.length === 0) return;
+  
+  const limit = Math.min(files.length, currentShotsRequired);
+  capturedShots = [];
+  let loadedCount = 0;
+
+  for (let i = 0; i < limit; i++) {
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      capturedShots[i] = e.target.result;
+      const progFrame = document.getElementById(`shot-prog-${i}`);
+      if (progFrame) progFrame.innerHTML = `<img src="${e.target.result}">`;
+      loadedCount++;
       
-      const warning = document.getElementById('camera-error-hint');
-      if (warning) warning.remove();
-      
-      // Bắt buộc tắt tiếng (muted) trực tiếp bằng mã JS trước khi play
-      videoElement.muted = true;
-      videoElement.setAttribute('muted', '');
-      videoElement.setAttribute('playsinline', '');
-      videoElement.setAttribute('autoplay', '');
-
-      // Khai báo danh sách các cấu hình chạy thử từ chuyên nghiệp đến cơ bản nhất
-      const constraintsList = [
-        // Cấu hình lý tưởng (HD 720p)
-        { video: { facingMode: activeCameraMode, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
-        // Cấu hình trung bình (Chỉ yêu cầu camera trước, tự chọn phân giải)
-        { video: { facingMode: activeCameraMode }, audio: false },
-        // Cấu hình tối thiểu (Chỉ cần có camera bất kỳ)
-        { video: true, audio: false }
-      ];
-
-      let streamSuccess = null;
-      let captureError = null;
-
-      // Vòng lặp đệ quy thử các cấu hình để tránh crash trên Safari/Chrome của GitHub Pages
-      for (let constraints of constraintsList) {
-        try {
-          streamSuccess = await navigator.mediaDevices.getUserMedia(constraints);
-          if (streamSuccess) break; // Khởi tạo thành công! Thoát khỏi vòng lặp thử lại.
-        } catch (err) {
-          captureError = err;
-          console.warn("Mục cấu hình camera thất bại, đang chuyển mục kế tiếp:", constraints, err);
+      if (loadedCount === limit) {
+        for (let j = limit; j < currentShotsRequired; j++) {
+          capturedShots[j] = capturedShots[j % limit];
+          const frame = document.getElementById(`shot-prog-${j}`);
+          if (frame) frame.innerHTML = `<img src="${capturedShots[j]}">`;
         }
+        setTimeout(() => {
+          stopWebcamStream();
+          initializeStudioWorkspace();
+          switchView('editor');
+        }, 600);
       }
-
-      if (streamSuccess) {
-        cameraStream = streamSuccess;
-        videoElement.srcObject = streamSuccess;
-        isCameraStreaming = true;
-        
-        // Cố gắng phát mượt luồng video
-        try {
-          await videoElement.play();
-        } catch (playErr) {
-          console.warn("Tự phát bị chặn, sẽ kích hoạt lại khi người dùng click:", playErr);
-          // Hỗ trợ tự kích hoạt khi click chuột vào bất kỳ đâu trên màn hình
-          const autoPlayHandler = () => {
-            videoElement.play();
-            document.removeEventListener('click', autoPlayHandler);
-          };
-          document.addEventListener('click', autoPlayHandler);
-        }
-
-        toggleMirrorView(); // Đồng bộ hiệu ứng lật gương lúc bật camera
-      } else {
-        // Khởi tạo bảng chuẩn đoán lỗi chi tiết nếu bị chặn hoàn toàn
-        handleCameraFailure(captureError);
-      }
-    }
-
-    // BẢNG CHUẨN ĐOÁN LỖI CAMERA CHI TIẾT
-    function handleCameraFailure(error) {
-      console.error("Camera hoàn toàn không thể truy cập:", error);
-      const videoElement = document.getElementById('webcam-feed');
-      videoElement.style.display = 'none';
-
-      const notice = document.getElementById('simulation-notice');
-      if (notice) notice.remove();
-
-      const viewport = document.getElementById('camera-viewport');
-      const existingWarning = document.getElementById('camera-error-hint');
-      if (existingWarning) existingWarning.remove();
-
-      const isUnsecure = window.location.protocol === 'http:' && window.location.hostname !== 'localhost';
-
-      const warningBox = document.createElement('div');
-      warningBox.id = "camera-error-hint";
-      warningBox.style.color = "white";
-      warningBox.style.textAlign = "center";
-      warningBox.style.padding = "2rem";
-      warningBox.style.zIndex = "25";
-      warningBox.style.maxWidth = "80%";
-      warningBox.innerHTML = `
-        <i class="fa-solid fa-circle-exclamation" style="font-size: 3rem; color: #FF8E9E; margin-bottom: 1rem;"></i>
-        <h3 style="font-weight:700; margin-bottom: 0.5rem;">Cần Cấp Quyền Camera</h3>
-        <p style="font-size:0.85rem; opacity:0.9; line-height:1.5;">
-          ${isUnsecure ? 
-            `<strong style="color: #FF8E9E;">LỖI BẢO MẬT:</strong> Bạn đang truy cập qua liên kết không an toàn <code style="background: rgba(0,0,0,0.3); padding:2px 4px;">http://</code>. Trình duyệt bắt buộc bạn phải đổi link thành <strong style="color: #52B788;">https://</strong> để bật được camera.` : 
-            `Trình duyệt hoặc hệ điều hành đã chặn quyền truy cập webcam. Hãy nhấp vào <strong>biểu tượng ổ khóa🔒</strong> cạnh thanh địa chỉ web để bật lại quyền camera.`
-          }
-        </p>
-        <div style="margin-top: 1.5rem; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
-          ${isUnsecure ? 
-            `<button class="action-btn" onclick="window.location.protocol = 'https:'" style="background:#52B788; color:white; font-size:0.85rem; padding: 8px 16px;">
-              <i class="fa-solid fa-shield-halved"></i> Chuyển Sang HTTPS
-            </button>` : 
-            `<button class="action-btn" onclick="setupWebcamStream()" style="background:#52B788; color:white; font-size:0.85rem; padding: 8px 16px;">
-              <i class="fa-solid fa-rotate-left"></i> Thử Lại Thao Tác
-            </button>`
-          }
-          <button class="action-btn" onclick="startSimulatedCameraStream(); this.parentElement.parentElement.remove();" style="background:rgba(255,255,255,0.2); color:white; font-size:0.85rem; padding: 8px 16px;">
-            <i class="fa-solid fa-wand-magic-sparkles"></i> Dùng Camera Giả Lập
-          </button>
-        </div>
-      `;
-      viewport.appendChild(warningBox);
-    }
-
-    function stopWebcamStream() {
-      isCameraStreaming = false;
-      if (cameraStream) {
-        cameraStream.getTracks().forEach(track => track.stop());
-        cameraStream = null;
-      }
-      
-      const warning = document.getElementById('camera-error-hint');
-      if (warning) warning.remove();
-      
-      const notice = document.getElementById('simulation-notice');
-      if (notice) notice.remove();
-      
-      document.getElementById('webcam-feed').style.display = 'block';
-    }
+    };
+    reader.readAsDataURL(files[i]);
+  }
+}
 
     function toggleMirrorView() {
       const isMirrored = document.getElementById('cam-mirror').checked;
