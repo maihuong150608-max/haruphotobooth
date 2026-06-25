@@ -1752,12 +1752,34 @@
 
     // DIAGNOSTIC SCREEN & PROGRESSIVE RETRY FOR GITHUB PAGES
     async function setupWebcamStream() {
-      if (isCameraStreaming) return;
-      const videoElement = document.getElementById('webcam-feed');
-      videoElement.style.display = 'block';
-      
-      const warning = document.getElementById('camera-error-hint');
-      if (warning) warning.remove();
+    // 1. Cấu hình "an toàn" nhất: không ép buộc camera trước hay sau
+    const constraints = {
+        video: true, // Chỉ cần yêu cầu có video là được
+        audio: false
+    };
+
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        // Gán stream vào video element
+        const videoElement = document.getElementById('your-video-id'); // Thay ID của bạn vào đây
+        if (videoElement) {
+            videoElement.srcObject = stream;
+        }
+    } catch (err) {
+        console.error("Lỗi truy cập camera:", err);
+        
+        // 2. Nếu vẫn lỗi, thử yêu cầu quyền cơ bản nhất (không cấu hình gì cả)
+        try {
+            const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            const videoElement = document.getElementById('your-video-id');
+            if (videoElement) {
+                videoElement.srcObject = fallbackStream;
+            }
+        } catch (finalErr) {
+            handleCameraFailure(finalErr);
+        }
+    }
+}
       
       // Bắt buộc tắt tiếng (muted) trực tiếp bằng mã JS trước khi play
       videoElement.muted = true;
